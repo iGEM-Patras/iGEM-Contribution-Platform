@@ -1,16 +1,39 @@
-# React + Vite
+# iGEM Contribution Platform
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+A submission form where iGEM teams upload their game to the community gallery:
+team details, a main image, up to three additional images, and a rules PDF.
 
-Currently, two official plugins are available:
+Built with React 19, Vite and Tailwind CSS v4.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## Getting started
 
-## React Compiler
+```bash
+npm install
+npm run dev
+```
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+| Script            | What it does                                  |
+| ----------------- | --------------------------------------------- |
+| `npm run dev`     | Start the dev server with HMR                 |
+| `npm run build`   | Production build into `dist/`                 |
+| `npm run preview` | Serve the production build locally            |
+| `npm run lint`    | Run ESLint over the project                   |
 
-## Expanding the ESLint configuration
+## Styling
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+Tailwind v4 is wired in through the `@tailwindcss/vite` plugin and configured
+from CSS in [src/index.css](src/index.css) — there is no `tailwind.config.js`.
+To customise the theme, use `@theme` in that file.
+
+## Deployment
+
+Pushes to `main` build and publish to GitHub Pages via
+[.github/workflows/deploy.yml](.github/workflows/deploy.yml). The site is served
+from a subpath, so `base` in [vite.config.js](vite.config.js) must match the
+repository name.
+
+## Status
+
+Submissions are validated client-side but not yet persisted — `handleSubmit` in
+[src/App.jsx](src/App.jsx) simulates the request. Wiring it to Airtable is the
+next step (`axios` is already installed for it).

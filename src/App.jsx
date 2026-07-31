@@ -1,19 +1,33 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import './index.css';
 
-export default function App() {
-  const [formData, setFormData] = useState({
-    teamName: '',
-    email: '',
-    instagram: '',
-    mainImage: null,
-    secondaryImages: [],
-    rulesFile: null,
-  });
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+const MAX_PDF_BYTES = 10 * 1024 * 1024;
+const MAX_SECONDARY_IMAGES = 3;
 
+const EMPTY_FORM = {
+  teamName: '',
+  email: '',
+  instagram: '',
+  mainImage: null,
+  secondaryImages: [],
+  rulesFile: null,
+};
+
+// Identifies a File well enough to key a list row and to spot duplicates.
+const fileKey = (file) => `${file.name}-${file.size}-${file.lastModified}`;
+
+export default function App() {
+  const [formData, setFormData] = useState(EMPTY_FORM);
   const [errors, setErrors] = useState({});
   const [loading, setLoading] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+
+  const resetTimerRef = useRef(null);
+  useEffect(() => () => clearTimeout(resetTimerRef.current), []);
+
+  const setError = (name, message) =>
+    setErrors(prev => ({ ...prev, [name]: message }));
 
   // Handle text inputs
   const handleInputChange = (e) => {
@@ -24,67 +38,62 @@ export default function App() {
     }));
     // Clear error when user starts typing
     if (errors[name]) {
-      setErrors(prev => ({
-        ...prev,
-        [name]: ''
-      }));
+      setError(name, '');
     }
   };
 
   // Handle main image
   const handleMainImageChange = (e) => {
-    const file = e.target.files[0];
-    if (file) {
-      if (file.size > 5 * 1024 * 1024) {
-        setErrors(prev => ({
-          ...prev,
-          mainImage: 'Image must be under 5MB'
-        }));
-        return;
-      }
-      setFormData(prev => ({
-        ...prev,
-        mainImage: file
-      }));
-      setErrors(prev => ({
-        ...prev,
-        mainImage: ''
-      }));
+    const file = e.target.files?.[0];
+    // Always clear the input so picking the same file again still fires onChange.
+    e.target.value = '';
+    if (!file) return;
+
+    if (!file.type.startsWith('image/')) {
+      setError('mainImage', 'Only image files are allowed');
+      return;
     }
+    if (file.size > MAX_IMAGE_BYTES) {
+      setError('mainImage', 'Image must be under 5MB');
+      return;
+    }
+    setFormData(prev => ({ ...prev, mainImage: file }));
+    setError('mainImage', '');
   };
 
   // Handle secondary images (up to 3)
   const handleSecondaryImagesChange = (e) => {
-    const files = Array.from(e.target.files);
-    
-    if (files.length + formData.secondaryImages.length > 3) {
-      setErrors(prev => ({
-        ...prev,
-        secondaryImages: 'Maximum 3 secondary images allowed'
-      }));
-      return;
-    }
+    const files = Array.from(e.target.files ?? []);
+    e.target.value = '';
+    if (files.length === 0) return;
 
-    const validFiles = [];
-    for (let file of files) {
-      if (file.size > 5 * 1024 * 1024) {
-        setErrors(prev => ({
-          ...prev,
-          secondaryImages: 'Each image must be under 5MB'
-        }));
-        return;
+    const existing = new Set(formData.secondaryImages.map(fileKey));
+    const remaining = MAX_SECONDARY_IMAGES - formData.secondaryImages.length;
+    const accepted = [];
+    const rejected = [];
+
+    for (const file of files) {
+      if (!file.type.startsWith('image/')) {
+        rejected.push(`${file.name} is not an image`);
+      } else if (file.size > MAX_IMAGE_BYTES) {
+        rejected.push(`${file.name} is over 5MB`);
+      } else if (existing.has(fileKey(file))) {
+        rejected.push(`${file.name} was already added`);
+      } else if (accepted.length >= remaining) {
+        rejected.push(`${file.name} exceeds the ${MAX_SECONDARY_IMAGES}-image limit`);
+      } else {
+        existing.add(fileKey(file));
+        accepted.push(file);
       }
-      validFiles.push(file);
     }
 
-    setFormData(prev => ({
-      ...prev,
-      secondaryImages: [...prev.secondaryImages, ...validFiles]
-    }));
-    setErrors(prev => ({
-      ...prev,
-      secondaryImages: ''
-    }));
+    if (accepted.length > 0) {
+      setFormData(prev => ({
+        ...prev,
+        secondaryImages: [...prev.secondaryImages, ...accepted]
+      }));
+    }
+    setError('secondaryImages', rejected.join('; '));
   };
 
   // Remove secondary image
@@ -93,35 +102,26 @@ export default function App() {
       ...prev,
       secondaryImages: prev.secondaryImages.filter((_, i) => i !== index)
     }));
+    // Freeing a slot invalidates any "limit reached" message.
+    setError('secondaryImages', '');
   };
 
   // Handle rules file
   const handleRulesFileChange = (e) => {
-    const file = e.target.files[0];
-    if (file) {
-      if (file.size > 10 * 1024 * 1024) {
-        setErrors(prev => ({
-          ...prev,
-          rulesFile: 'PDF must be under 10MB'
-        }));
-        return;
-      }
-      if (file.type !== 'application/pdf') {
-        setErrors(prev => ({
-          ...prev,
-          rulesFile: 'Only PDF files allowed'
-        }));
-        return;
-      }
-      setFormData(prev => ({
-        ...prev,
-        rulesFile: file
-      }));
-      setErrors(prev => ({
-        ...prev,
-        rulesFile: ''
-      }));
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+
+    if (file.type !== 'application/pdf') {
+      setError('rulesFile', 'Only PDF files allowed');
+      return;
     }
+    if (file.size > MAX_PDF_BYTES) {
+      setError('rulesFile', 'PDF must be under 10MB');
+      return;
+    }
+    setFormData(prev => ({ ...prev, rulesFile: file }));
+    setError('rulesFile', '');
   };
 
   // Validate form
@@ -135,6 +135,16 @@ export default function App() {
       newErrors.email = 'Email is required';
     } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email)) {
       newErrors.email = 'Invalid email format';
+    }
+    if (formData.instagram.trim()) {
+      try {
+        const url = new URL(formData.instagram.trim());
+        if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+          newErrors.instagram = 'Link must start with http:// or https://';
+        }
+      } catch {
+        newErrors.instagram = 'Enter a valid URL (e.g. https://instagram.com/your-team)';
+      }
     }
     if (!formData.mainImage) {
       newErrors.mainImage = 'Main image is required';
@@ -154,7 +164,7 @@ export default function App() {
   const handleSubmit = async (e) => {
     e.preventDefault();
 
-    if (!validateForm()) {
+    if (loading || !validateForm()) {
       return;
     }
 
@@ -163,42 +173,42 @@ export default function App() {
     try {
       // TODO: This will be connected to Airtable in Part 2
       // For now, just simulate success
-      console.log('Form data:', formData);
-      
-      // Simulate delay
       await new Promise(resolve => setTimeout(resolve, 1000));
-      
+
       setSubmitted(true);
-      
+
       // Reset form after 3 seconds
-      setTimeout(() => {
-        setFormData({
-          teamName: '',
-          email: '',
-          instagram: '',
-          mainImage: null,
-          secondaryImages: [],
-          rulesFile: null,
-        });
+      resetTimerRef.current = setTimeout(() => {
+        setFormData(EMPTY_FORM);
+        setErrors({});
         setSubmitted(false);
       }, 3000);
     } catch (error) {
       console.error('Submission error:', error);
-      setErrors(prev => ({
-        ...prev,
-        submit: 'Failed to submit. Please try again.'
-      }));
+      setError('submit', 'Failed to submit. Please try again.');
     } finally {
       setLoading(false);
     }
   };
 
+  // Shared classes for the text inputs.
+  const inputClass = (hasError) =>
+    `w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 ${
+      hasError ? 'border-red-500' : 'border-gray-300'
+    }`;
+
+  // Dashed upload box: the label is the box, so the whole area is clickable.
+  const dropZoneClass =
+    'block border-2 border-dashed border-gray-300 rounded-lg p-6 text-center ' +
+    'hover:border-purple-500 focus-within:border-purple-500 focus-within:ring-2 ' +
+    'focus-within:ring-purple-500 cursor-pointer transition';
+
   if (submitted) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-purple-50 to-blue-50 flex items-center justify-center p-4">
-        <div className="bg-white rounded-lg shadow-lg p-8 max-w-md w-full text-center">
+        <div className="bg-white rounded-lg shadow-lg p-8 max-w-md w-full text-center" role="status">
           <div className="mb-4">
-            <svg className="mx-auto h-12 w-12 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className="mx-auto h-12 w-12 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
             </svg>
           </div>
@@ -227,171 +237,186 @@ export default function App() {
 
         {/* Form Card */}
         <div className="bg-white rounded-lg shadow-lg p-8">
-          <form onSubmit={handleSubmit} className="space-y-6">
-            
+          {/* noValidate: this form reports its own errors, so the browser's
+              native bubbles must not pre-empt them. */}
+          <form onSubmit={handleSubmit} noValidate className="space-y-6">
+
             {/* Team Name */}
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
+              <label htmlFor="teamName" className="block text-sm font-medium text-gray-700 mb-2">
                 Team Name *
               </label>
               <input
                 type="text"
+                id="teamName"
                 name="teamName"
                 value={formData.teamName}
                 onChange={handleInputChange}
                 placeholder="e.g., MIT iGEM 2024"
-                className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 ${
-                  errors.teamName ? 'border-red-500' : 'border-gray-300'
-                }`}
+                aria-invalid={Boolean(errors.teamName)}
+                aria-describedby={errors.teamName ? 'teamName-error' : undefined}
+                className={inputClass(errors.teamName)}
               />
               {errors.teamName && (
-                <p className="text-red-500 text-sm mt-1">{errors.teamName}</p>
+                <p id="teamName-error" role="alert" className="text-red-500 text-sm mt-1">{errors.teamName}</p>
               )}
             </div>
 
             {/* Email */}
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
+              <label htmlFor="email" className="block text-sm font-medium text-gray-700 mb-2">
                 Email *
               </label>
               <input
                 type="email"
+                id="email"
                 name="email"
                 value={formData.email}
                 onChange={handleInputChange}
                 placeholder="your@email.com"
-                className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 ${
-                  errors.email ? 'border-red-500' : 'border-gray-300'
-                }`}
+                aria-invalid={Boolean(errors.email)}
+                aria-describedby={errors.email ? 'email-error' : undefined}
+                className={inputClass(errors.email)}
               />
               {errors.email && (
-                <p className="text-red-500 text-sm mt-1">{errors.email}</p>
+                <p id="email-error" role="alert" className="text-red-500 text-sm mt-1">{errors.email}</p>
               )}
             </div>
 
             {/* Instagram */}
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
+              <label htmlFor="instagram" className="block text-sm font-medium text-gray-700 mb-2">
                 Instagram Link (Optional)
               </label>
               <input
                 type="url"
+                id="instagram"
                 name="instagram"
                 value={formData.instagram}
                 onChange={handleInputChange}
                 placeholder="https://instagram.com/your-team"
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
+                aria-invalid={Boolean(errors.instagram)}
+                aria-describedby={errors.instagram ? 'instagram-error' : 'instagram-hint'}
+                className={inputClass(errors.instagram)}
               />
-              <p className="text-gray-500 text-xs mt-1">
-                Helps us verify your team's authenticity
-              </p>
+              {errors.instagram ? (
+                <p id="instagram-error" role="alert" className="text-red-500 text-sm mt-1">{errors.instagram}</p>
+              ) : (
+                <p id="instagram-hint" className="text-gray-500 text-xs mt-1">
+                  Helps us verify your team's authenticity
+                </p>
+              )}
             </div>
 
             {/* Main Image */}
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
+              <span className="block text-sm font-medium text-gray-700 mb-2">
                 Main Game Image *
-              </label>
-              <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:border-purple-500 cursor-pointer transition">
+              </span>
+              <label htmlFor="mainImage" className={dropZoneClass}>
+                {/* sr-only rather than hidden: display:none would make the
+                    input unreachable by keyboard. */}
                 <input
                   type="file"
                   accept="image/*"
                   onChange={handleMainImageChange}
-                  className="hidden"
+                  className="sr-only"
                   id="mainImage"
+                  aria-invalid={Boolean(errors.mainImage)}
+                  aria-describedby={errors.mainImage ? 'mainImage-error' : undefined}
                 />
-                <label htmlFor="mainImage" className="cursor-pointer">
-                  <svg className="mx-auto h-12 w-12 text-gray-400 mb-2" stroke="currentColor" fill="none" viewBox="0 0 48 48">
-                    <path d="M28 8H12a4 4 0 00-4 4v20a4 4 0 004 4h24a4 4 0 004-4V20m-8-8h-8m0 0V4m0 8v8" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
-                  </svg>
-                  <p className="text-gray-600">Click to upload or drag and drop</p>
-                  <p className="text-gray-500 text-xs">PNG, JPG up to 5MB</p>
-                </label>
-              </div>
+                <svg className="mx-auto h-12 w-12 text-gray-400 mb-2" stroke="currentColor" fill="none" viewBox="0 0 48 48" aria-hidden="true">
+                  <path d="M28 8H12a4 4 0 00-4 4v20a4 4 0 004 4h24a4 4 0 004-4V20m-8-8h-8m0 0V4m0 8v8" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                <span className="block text-gray-600">Click to upload</span>
+                <span className="block text-gray-500 text-xs">PNG, JPG up to 5MB</span>
+              </label>
               {formData.mainImage && (
                 <p className="text-green-600 text-sm mt-2">✓ {formData.mainImage.name}</p>
               )}
               {errors.mainImage && (
-                <p className="text-red-500 text-sm mt-1">{errors.mainImage}</p>
+                <p id="mainImage-error" role="alert" className="text-red-500 text-sm mt-1">{errors.mainImage}</p>
               )}
             </div>
 
             {/* Secondary Images */}
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Additional Images ({formData.secondaryImages.length}/3) *
-              </label>
-              <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:border-purple-500 cursor-pointer transition">
+              <span className="block text-sm font-medium text-gray-700 mb-2">
+                Additional Images ({formData.secondaryImages.length}/{MAX_SECONDARY_IMAGES}) *
+              </span>
+              <label htmlFor="secondaryImages" className={dropZoneClass}>
                 <input
                   type="file"
                   accept="image/*"
                   multiple
                   onChange={handleSecondaryImagesChange}
-                  className="hidden"
+                  className="sr-only"
                   id="secondaryImages"
+                  aria-invalid={Boolean(errors.secondaryImages)}
+                  aria-describedby={errors.secondaryImages ? 'secondaryImages-error' : undefined}
                 />
-                <label htmlFor="secondaryImages" className="cursor-pointer">
-                  <svg className="mx-auto h-12 w-12 text-gray-400 mb-2" stroke="currentColor" fill="none" viewBox="0 0 48 48">
-                    <path d="M28 8H12a4 4 0 00-4 4v20a4 4 0 004 4h24a4 4 0 004-4V20m-8-8h-8m0 0V4m0 8v8" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
-                  </svg>
-                  <p className="text-gray-600">Click to upload up to 3 images</p>
-                  <p className="text-gray-500 text-xs">PNG, JPG up to 5MB each</p>
-                </label>
-              </div>
+                <svg className="mx-auto h-12 w-12 text-gray-400 mb-2" stroke="currentColor" fill="none" viewBox="0 0 48 48" aria-hidden="true">
+                  <path d="M28 8H12a4 4 0 00-4 4v20a4 4 0 004 4h24a4 4 0 004-4V20m-8-8h-8m0 0V4m0 8v8" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                <span className="block text-gray-600">
+                  Click to upload up to {MAX_SECONDARY_IMAGES} images
+                </span>
+                <span className="block text-gray-500 text-xs">PNG, JPG up to 5MB each</span>
+              </label>
               {formData.secondaryImages.length > 0 && (
-                <div className="mt-4 space-y-2">
+                <ul className="mt-4 space-y-2">
                   {formData.secondaryImages.map((file, index) => (
-                    <div key={index} className="flex items-center justify-between bg-gray-50 p-2 rounded">
+                    <li key={fileKey(file)} className="flex items-center justify-between bg-gray-50 p-2 rounded">
                       <span className="text-sm text-gray-600">{file.name}</span>
                       <button
                         type="button"
                         onClick={() => removeSecondaryImage(index)}
                         className="text-red-500 hover:text-red-700 text-sm font-medium"
                       >
-                        Remove
+                        Remove<span className="sr-only"> {file.name}</span>
                       </button>
-                    </div>
+                    </li>
                   ))}
-                </div>
+                </ul>
               )}
               {errors.secondaryImages && (
-                <p className="text-red-500 text-sm mt-1">{errors.secondaryImages}</p>
+                <p id="secondaryImages-error" role="alert" className="text-red-500 text-sm mt-1">{errors.secondaryImages}</p>
               )}
             </div>
 
             {/* Rules PDF */}
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
+              <span className="block text-sm font-medium text-gray-700 mb-2">
                 Game Rules (PDF) *
-              </label>
-              <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:border-purple-500 cursor-pointer transition">
+              </span>
+              <label htmlFor="rulesFile" className={dropZoneClass}>
                 <input
                   type="file"
-                  accept=".pdf"
+                  accept="application/pdf"
                   onChange={handleRulesFileChange}
-                  className="hidden"
+                  className="sr-only"
                   id="rulesFile"
+                  aria-invalid={Boolean(errors.rulesFile)}
+                  aria-describedby={errors.rulesFile ? 'rulesFile-error' : undefined}
                 />
-                <label htmlFor="rulesFile" className="cursor-pointer">
-                  <svg className="mx-auto h-12 w-12 text-gray-400 mb-2" stroke="currentColor" fill="none" viewBox="0 0 48 48">
-                    <path d="M8 8h32v32H8z" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
-                    <path d="M8 16h32M8 24h32M8 32h32" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
-                  </svg>
-                  <p className="text-gray-600">Click to upload PDF</p>
-                  <p className="text-gray-500 text-xs">PDF up to 10MB</p>
-                </label>
-              </div>
+                <svg className="mx-auto h-12 w-12 text-gray-400 mb-2" stroke="currentColor" fill="none" viewBox="0 0 48 48" aria-hidden="true">
+                  <path d="M8 8h32v32H8z" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+                  <path d="M8 16h32M8 24h32M8 32h32" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                <span className="block text-gray-600">Click to upload PDF</span>
+                <span className="block text-gray-500 text-xs">PDF up to 10MB</span>
+              </label>
               {formData.rulesFile && (
                 <p className="text-green-600 text-sm mt-2">✓ {formData.rulesFile.name}</p>
               )}
               {errors.rulesFile && (
-                <p className="text-red-500 text-sm mt-1">{errors.rulesFile}</p>
+                <p id="rulesFile-error" role="alert" className="text-red-500 text-sm mt-1">{errors.rulesFile}</p>
               )}
             </div>
 
             {/* Submit Error */}
             {errors.submit && (
-              <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+              <div className="bg-red-50 border border-red-200 rounded-lg p-4" role="alert">
                 <p className="text-red-700 text-sm">{errors.submit}</p>
               </div>
             )}
