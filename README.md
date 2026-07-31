@@ -32,8 +32,38 @@ Pushes to `main` build and publish to GitHub Pages via
 from a subpath, so `base` in [vite.config.js](vite.config.js) must match the
 repository name.
 
-## Status
+## Configuration
 
-Submissions are validated client-side but not yet persisted — `handleSubmit` in
-[src/App.jsx](src/App.jsx) simulates the request. Wiring it to Airtable is the
-next step (`axios` is already installed for it).
+Copy `.env.example` to `.env` and fill in the Airtable and Cloudinary values:
+
+```bash
+cp .env.example .env
+```
+
+Vite reads `.env` once at startup — restart the dev server after any change.
+
+## Submission flow
+
+1. Files upload to Cloudinary via an unsigned preset ([src/utils/fileUpload.js](src/utils/fileUpload.js))
+2. The resulting URLs plus an 8-character verification code are written to
+   Airtable with `Status = Pending` ([src/utils/airtable.js](src/utils/airtable.js))
+3. The code is shown once on the success screen
+
+Secondary image URLs are stored as a JSON array in a long-text field. `Submitted At`
+is an Airtable *Created time* field — computed server-side, never written by this app.
+
+## Deployment note — read before pushing env vars to CI
+
+Vite **inlines** every `VITE_*` variable into the production bundle as a literal
+string. Cloudinary's unsigned preset is designed for that and is safe to expose.
+`VITE_AIRTABLE_TOKEN` is not: it is a write credential, and publishing it lets
+anyone who opens devtools read, insert, or delete records in the base.
+
+So the current setup is safe for local development but **not** for the public
+Pages site. Before deploying submissions, move the Airtable call behind a
+serverless function (Cloudflare Workers / Netlify / Vercel) that holds the token
+server-side, and have the browser POST to that instead. Until then, do not add
+`VITE_AIRTABLE_TOKEN` to the GitHub Actions workflow.
+
+If a token is ever committed or deployed, rotate it at
+<https://airtable.com/create/tokens> — deleting the commit does not revoke it.

@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import './index.css';
+import { uploadToCloudinary, MAX_IMAGE_BYTES, MAX_PDF_BYTES } from './utils/fileUpload';
+import { submitToAirtable } from './utils/airtable';
 
-const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
-const MAX_PDF_BYTES = 10 * 1024 * 1024;
 const MAX_SECONDARY_IMAGES = 3;
 
 const EMPTY_FORM = {
@@ -23,8 +23,19 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [submitted, setSubmitted] = useState(false);
 
-  const resetTimerRef = useRef(null);
-  useEffect(() => () => clearTimeout(resetTimerRef.current), []);
+  // Set once the Airtable record exists; this is the only copy the team gets.
+  const [verificationCode, setVerificationCode] = useState('');
+  // null when idle, otherwise { stage: 'uploading' | 'saving', done, total }
+  const [progress, setProgress] = useState(null);
+  const [copied, setCopied] = useState(false);
+
+  const copyTimerRef = useRef(null);
+  useEffect(() => () => clearTimeout(copyTimerRef.current), []);
+
+  // `loading` is async state — two fast clicks can both read it as false before
+  // React re-renders, which would double-upload and create two Airtable rows.
+  // A ref updates synchronously, so it actually closes the window.
+  const submittingRef = useRef(false);
 
   const setError = (name, message) =>
     setErrors(prev => ({ ...prev, [name]: message }));
@@ -164,31 +175,81 @@ export default function App() {
   const handleSubmit = async (e) => {
     e.preventDefault();
 
-    if (loading || !validateForm()) {
+    if (submittingRef.current || !validateForm()) {
       return;
     }
 
+    submittingRef.current = true;
     setLoading(true);
+    const total = 1 + formData.secondaryImages.length + 1; // main + secondary + pdf
+    setProgress({ stage: 'uploading', done: 0, total });
+    const markUploaded = () =>
+      setProgress(prev => (prev ? { ...prev, done: prev.done + 1 } : prev));
 
     try {
-      // TODO: This will be connected to Airtable in Part 2
-      // For now, just simulate success
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      // Main image first, so a misconfigured Cloudinary account fails fast
+      // before we push the rest of the files over the wire.
+      const mainUrl = await uploadToCloudinary(formData.mainImage, { resourceType: 'image' });
+      markUploaded();
 
+      const secondaryUrls = await Promise.all(
+        formData.secondaryImages.map(async (file) => {
+          const url = await uploadToCloudinary(file, { resourceType: 'image' });
+          markUploaded();
+          return url;
+        })
+      );
+
+      // 'raw' keeps the PDF out of Cloudinary's image pipeline, which is
+      // subject to the PDF-delivery restriction that new accounts have off.
+      const pdfUrl = await uploadToCloudinary(formData.rulesFile, { resourceType: 'raw' });
+      markUploaded();
+
+      setProgress({ stage: 'saving', done: total, total });
+      const result = await submitToAirtable(
+        formData,
+        { main: mainUrl, secondary: secondaryUrls },
+        pdfUrl
+      );
+
+      setVerificationCode(result.verificationCode);
       setSubmitted(true);
-
-      // Reset form after 3 seconds
-      resetTimerRef.current = setTimeout(() => {
-        setFormData(EMPTY_FORM);
-        setErrors({});
-        setSubmitted(false);
-      }, 3000);
     } catch (error) {
       console.error('Submission error:', error);
-      setError('submit', 'Failed to submit. Please try again.');
+      // The utils throw messages written for humans, so surface them directly.
+      setError('submit', error.message || 'Failed to submit. Please try again.');
     } finally {
+      submittingRef.current = false;
       setLoading(false);
+      setProgress(null);
     }
+  };
+
+  const startAnotherSubmission = () => {
+    setFormData(EMPTY_FORM);
+    setErrors({});
+    setVerificationCode('');
+    setCopied(false);
+    setSubmitted(false);
+  };
+
+  const copyCode = async () => {
+    try {
+      await navigator.clipboard.writeText(verificationCode);
+      setCopied(true);
+      clearTimeout(copyTimerRef.current);
+      copyTimerRef.current = setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Clipboard is blocked outside secure contexts and in some browsers;
+      // the code is selectable on screen, so this is not worth an error state.
+      console.warn('Clipboard write was blocked — copy the code manually.');
+    }
+  };
+
+  const submitLabel = () => {
+    if (!progress) return loading ? 'Submitting...' : 'Submit Game Upload';
+    if (progress.stage === 'saving') return 'Saving submission...';
+    return `Uploading files... ${progress.done}/${progress.total}`;
   };
 
   // Shared classes for the text inputs.
@@ -213,12 +274,41 @@ export default function App() {
             </svg>
           </div>
           <h2 className="text-2xl font-bold text-gray-900 mb-2">Success!</h2>
-          <p className="text-gray-600 mb-4">
-            Your game upload has been submitted. You'll receive a verification email shortly with your confirmation code.
+          <p className="text-gray-600 mb-6">
+            Your game has been submitted and is pending review.
           </p>
-          <p className="text-sm text-gray-500">
+
+          {/* The code exists nowhere else yet — this screen must not auto-dismiss. */}
+          <div className="bg-purple-50 border-2 border-purple-200 rounded-lg p-5 mb-4">
+            <p className="text-xs font-medium uppercase tracking-wide text-purple-700 mb-2">
+              Your verification code
+            </p>
+            <p className="text-3xl font-bold font-mono tracking-[0.2em] text-purple-900 select-all break-all">
+              {verificationCode}
+            </p>
+            <button
+              type="button"
+              onClick={copyCode}
+              className="mt-3 text-sm font-medium text-purple-700 hover:text-purple-900 underline"
+            >
+              {copied ? 'Copied!' : 'Copy code'}
+            </button>
+          </div>
+
+          <p className="text-sm text-gray-700 font-medium mb-2">
+            Save this code now — it identifies your submission.
+          </p>
+          <p className="text-sm text-gray-500 mb-6">
             Our admin team will review your submission and contact you within 24 hours.
           </p>
+
+          <button
+            type="button"
+            onClick={startAnotherSubmission}
+            className="w-full bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white font-bold py-3 rounded-lg transition"
+          >
+            Submit another game
+          </button>
         </div>
       </div>
     );
@@ -253,6 +343,7 @@ export default function App() {
                 value={formData.teamName}
                 onChange={handleInputChange}
                 placeholder="e.g., MIT iGEM 2024"
+                disabled={loading}
                 aria-invalid={Boolean(errors.teamName)}
                 aria-describedby={errors.teamName ? 'teamName-error' : undefined}
                 className={inputClass(errors.teamName)}
@@ -274,6 +365,7 @@ export default function App() {
                 value={formData.email}
                 onChange={handleInputChange}
                 placeholder="your@email.com"
+                disabled={loading}
                 aria-invalid={Boolean(errors.email)}
                 aria-describedby={errors.email ? 'email-error' : undefined}
                 className={inputClass(errors.email)}
@@ -295,6 +387,7 @@ export default function App() {
                 value={formData.instagram}
                 onChange={handleInputChange}
                 placeholder="https://instagram.com/your-team"
+                disabled={loading}
                 aria-invalid={Boolean(errors.instagram)}
                 aria-describedby={errors.instagram ? 'instagram-error' : 'instagram-hint'}
                 className={inputClass(errors.instagram)}
@@ -322,6 +415,7 @@ export default function App() {
                   onChange={handleMainImageChange}
                   className="sr-only"
                   id="mainImage"
+                  disabled={loading}
                   aria-invalid={Boolean(errors.mainImage)}
                   aria-describedby={errors.mainImage ? 'mainImage-error' : undefined}
                 />
@@ -352,6 +446,7 @@ export default function App() {
                   onChange={handleSecondaryImagesChange}
                   className="sr-only"
                   id="secondaryImages"
+                  disabled={loading}
                   aria-invalid={Boolean(errors.secondaryImages)}
                   aria-describedby={errors.secondaryImages ? 'secondaryImages-error' : undefined}
                 />
@@ -371,7 +466,8 @@ export default function App() {
                       <button
                         type="button"
                         onClick={() => removeSecondaryImage(index)}
-                        className="text-red-500 hover:text-red-700 text-sm font-medium"
+                        disabled={loading}
+                        className="text-red-500 hover:text-red-700 text-sm font-medium disabled:opacity-50"
                       >
                         Remove<span className="sr-only"> {file.name}</span>
                       </button>
@@ -396,6 +492,7 @@ export default function App() {
                   onChange={handleRulesFileChange}
                   className="sr-only"
                   id="rulesFile"
+                  disabled={loading}
                   aria-invalid={Boolean(errors.rulesFile)}
                   aria-describedby={errors.rulesFile ? 'rulesFile-error' : undefined}
                 />
@@ -421,17 +518,39 @@ export default function App() {
               </div>
             )}
 
+            {/* Upload progress */}
+            {progress && (
+              <div>
+                <div
+                  role="progressbar"
+                  aria-valuemin={0}
+                  aria-valuemax={progress.total}
+                  aria-valuenow={progress.done}
+                  aria-label={progress.stage === 'saving' ? 'Saving submission' : 'Uploading files'}
+                  className="h-2 w-full bg-gray-200 rounded-full overflow-hidden"
+                >
+                  <div
+                    className="h-full bg-purple-600 transition-all duration-300"
+                    style={{ width: `${(progress.done / progress.total) * 100}%` }}
+                  />
+                </div>
+                <p className="text-gray-500 text-xs mt-2 text-center">
+                  Keep this tab open until your verification code appears.
+                </p>
+              </div>
+            )}
+
             {/* Submit Button */}
             <button
               type="submit"
               disabled={loading}
               className="w-full bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white font-bold py-3 rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {loading ? 'Submitting...' : 'Submit Game Upload'}
+              {submitLabel()}
             </button>
 
             <p className="text-gray-500 text-xs text-center">
-              * Required fields. You'll receive a verification email shortly.
+              * Required fields. You'll get a verification code as soon as your files finish uploading.
             </p>
           </form>
         </div>

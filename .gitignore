@@ -12,6 +12,12 @@ dist
 dist-ssr
 *.local
 
+# Environment files — these hold live credentials, never commit them.
+# The negation keeps the placeholder template tracked.
+.env
+.env.*
+!.env.example
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
