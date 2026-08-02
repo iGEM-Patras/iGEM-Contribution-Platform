@@ -1,0 +1,22 @@
+name = "igem-gallery-api"
+main = "src/index.js"
+compatibility_date = "2026-01-01"
+
+# Logs for console.* calls. The Worker deliberately sends Airtable's own error
+# text to the log rather than to the browser, so this is where you read it when
+# a submission fails.
+[observability]
+enabled = true
+
+# Public, non-secret configuration. Real secrets are set with
+# `wrangler secret put NAME` and never appear in this file:
+#   AIRTABLE_TOKEN, AIRTABLE_BASE_ID, AIRTABLE_TABLE_ID, ADMIN_SECRET
+[vars]
+# Comma-separated exact origins. No wildcard: the admin routes are guarded by a
+# header, and `*` would let any site on the internet drive them.
+# 5173 is the Vite dev server; drop it once the beta is public if you like.
+ALLOWED_ORIGINS = "https://igem-patras.github.io,http://localhost:5173"
+
+# Used to verify that submitted file URLs came from our own Cloudinary account.
+# The cloud name is public — it appears in every image URL the gallery serves.
+CLOUDINARY_CLOUD_NAME = "euo9oitf"

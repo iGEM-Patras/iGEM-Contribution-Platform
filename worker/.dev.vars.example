@@ -1,0 +1,25 @@
+# ---------------------------------------------------------------------------
+# Local secrets for `wrangler dev`. Copy to `.dev.vars` and fill in:
+#
+#     cp .dev.vars.example .dev.vars
+#
+# `.dev.vars` is gitignored. In production these are NOT read from a file —
+# set each one with `wrangler secret put NAME`, which stores it encrypted at
+# Cloudflare and never writes it to the repo.
+#
+# Non-secret config (ALLOWED_ORIGINS, CLOUDINARY_CLOUD_NAME) lives in
+# wrangler.toml under [vars] instead.
+# ---------------------------------------------------------------------------
+
+# Airtable personal access token — https://airtable.com/create/tokens
+# Scopes: data.records:read AND data.records:write
+# Access: the "iGEM Game Gallery Beta" base
+AIRTABLE_TOKEN=patXXXXXXXXXXXXXX.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+AIRTABLE_BASE_ID=appXXXXXXXXXXXXXX
+AIRTABLE_TABLE_ID=tblYYYYYYYYYYYYYY
+
+# Password for the admin dashboard. Generate a strong one, e.g.
+#     openssl rand -base64 24
+# This is checked inside the Worker, so it is never shipped to a browser.
+ADMIN_SECRET=change-me-to-something-long-and-random
