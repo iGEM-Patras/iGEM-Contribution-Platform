@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import './index.css';
 import { uploadToCloudinary, MAX_IMAGE_BYTES, MAX_PDF_BYTES } from './utils/fileUpload';
-import { submitToAirtable } from './utils/airtable';
+import { submitGame } from './utils/api';
 
 const MAX_SECONDARY_IMAGES = 3;
 
@@ -206,11 +206,16 @@ export default function App() {
       markUploaded();
 
       setProgress({ stage: 'saving', done: total, total });
-      const result = await submitToAirtable(
-        formData,
-        { main: mainUrl, secondary: secondaryUrls },
-        pdfUrl
-      );
+      // The Worker holds the Airtable credential and mints the verification
+      // code; the browser only ever sees the code it gets back.
+      const result = await submitGame({
+        teamName: formData.teamName.trim(),
+        email: formData.email.trim(),
+        instagram: formData.instagram.trim(),
+        mainImageUrl: mainUrl,
+        secondaryImageUrls: secondaryUrls,
+        rulesPdfUrl: pdfUrl,
+      });
 
       setVerificationCode(result.verificationCode);
       setSubmitted(true);

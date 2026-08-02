@@ -18,14 +18,56 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+
+    # Repository *variables*, not secrets (Settings → Secrets and variables →
+    # Actions → Variables). All three are public by design — they end up inside
+    # the published bundle no matter what, because Vite inlines every VITE_*
+    # value. The Airtable token is deliberately absent: it lives in the
+    # Cloudflare Worker. Never add it here.
+    env:
+      VITE_API_URL: ${{ vars.VITE_API_URL }}
+      VITE_CLOUDINARY_CLOUD_NAME: ${{ vars.VITE_CLOUDINARY_CLOUD_NAME }}
+      VITE_CLOUDINARY_UPLOAD_PRESET: ${{ vars.VITE_CLOUDINARY_UPLOAD_PRESET }}
+
     steps:
       - uses: actions/checkout@v4
+
+      # A build with these unset succeeds and publishes a site whose form fails
+      # on the first click — the exact failure this project already shipped
+      # once. Fail here instead, where the cause is obvious.
+      - name: Verify build configuration
+        run: |
+          missing=""
+          [ -n "$VITE_API_URL" ] || missing="$missing VITE_API_URL"
+          [ -n "$VITE_CLOUDINARY_CLOUD_NAME" ] || missing="$missing VITE_CLOUDINARY_CLOUD_NAME"
+          [ -n "$VITE_CLOUDINARY_UPLOAD_PRESET" ] || missing="$missing VITE_CLOUDINARY_UPLOAD_PRESET"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing repository variables:$missing"
+            echo "Set them under Settings -> Secrets and variables -> Actions -> Variables."
+            exit 1
+          fi
+          echo "API endpoint: $VITE_API_URL"
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
+
       - run: npm ci
+      - run: npm run lint
       - run: npm run build
+
+      # Last line of defence. If an Airtable personal access token ever reaches
+      # the bundle, this stops the deploy before it becomes public. Rotate the
+      # token immediately if this ever fires.
+      - name: Assert no Airtable token in the bundle
+        run: |
+          if grep -rlE 'pat[A-Za-z0-9]{13,}\.' dist/; then
+            echo "::error::An Airtable token was found in the build output. Deploy blocked."
+            exit 1
+          fi
+          echo "No Airtable credential in dist/ — safe to publish."
+
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist

@@ -18,6 +18,13 @@ dist-ssr
 .env.*
 !.env.example
 
+# Cloudflare Worker local secrets and build state. Production secrets live in
+# Cloudflare (`wrangler secret put`), never in the repo.
+worker/.dev.vars
+worker/.dev.vars.*
+!worker/.dev.vars.example
+worker/.wrangler
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
