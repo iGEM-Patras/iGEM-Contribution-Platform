@@ -23,3 +23,12 @@ AIRTABLE_TABLE_ID=tblYYYYYYYYYYYYYY
 #     openssl rand -base64 24
 # This is checked inside the Worker, so it is never shipped to a browser.
 ADMIN_SECRET=change-me-to-something-long-and-random
+
+# Signing key for the approve/reject links in the admin email. Separate from
+# ADMIN_SECRET on purpose: those links travel through email and browser history,
+# so the key behind them must not also be the dashboard password. Generate with
+#     openssl rand -base64 32
+# Rotating this instantly voids every approve/reject link already sent — which
+# is the emergency exit if an admin mailbox is ever compromised. Links stored on
+# existing rows go stale; GET /admin/submissions re-signs fresh ones.
+DECISION_SECRET=change-me-to-a-different-long-random-value

@@ -1,0 +1,154 @@
+<!--
+  Admin review email for a new iGEM Game Gallery submission.
+
+  Paste the whole thing into the Zapier email action's Body field with the
+  editor switched to HTML/plain mode (see docs/PART5-APPROVAL-FLOW.md), then
+  replace every {{TOKEN}} below using Zapier's field picker. The tokens are NOT
+  live merge syntax — Zapier inserts its own opaque field references when you
+  pick a field, so each one has to be selected from the dropdown, not typed.
+
+    {{TEAM_NAME}}      -> Team Name
+    {{SUBMITTER_EMAIL}}-> Email
+    {{INSTAGRAM}}      -> Instagram
+    {{CODE}}           -> Verification Code
+    {{MAIN_IMAGE}}     -> Main Image URL
+    {{RULES_PDF}}      -> Rules PDF URL
+    {{APPROVE_URL}}    -> Approve URL      (written by the Worker at submit time)
+    {{REJECT_URL}}     -> Reject URL       (written by the Worker at submit time)
+
+  Layout notes, since email clients are not browsers: everything is tables with
+  inline styles because Gmail strips <style> blocks and ignores flexbox, and the
+  buttons are padded table cells rather than styled <a> tags because Outlook
+  refuses to honour padding on an inline element.
+-->
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"
+       style="background:#f4f4f7;margin:0;padding:24px 12px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <tr>
+    <td align="center">
+      <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0"
+             style="max-width:600px;width:100%;background:#ffffff;border-radius:12px;overflow:hidden;">
+
+        <!-- Header -->
+        <tr>
+          <td style="background:#4f2d8f;padding:22px 28px;">
+            <div style="color:#ffffff;font-size:18px;font-weight:700;line-height:1.3;">
+              New game submission
+            </div>
+            <div style="color:#d4c6ef;font-size:13px;padding-top:3px;">
+              iGEM Game Gallery &middot; awaiting review
+            </div>
+          </td>
+        </tr>
+
+        <!-- Team name -->
+        <tr>
+          <td style="padding:26px 28px 0;">
+            <div style="font-size:22px;font-weight:700;color:#1c1c22;line-height:1.3;">
+              {{TEAM_NAME}}
+            </div>
+          </td>
+        </tr>
+
+        <!-- Verification code, deliberately the most prominent element: it is
+             what the team quotes when they email about their submission. -->
+        <tr>
+          <td style="padding:18px 28px 0;">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"
+                   style="background:#f6f3fc;border:1px solid #e2d9f5;border-radius:8px;">
+              <tr>
+                <td style="padding:14px 18px;">
+                  <div style="font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:#7a6aa0;font-weight:700;">
+                    Verification code
+                  </div>
+                  <div style="font-family:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;font-size:26px;font-weight:700;color:#4f2d8f;letter-spacing:.12em;padding-top:4px;">
+                    {{CODE}}
+                  </div>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+
+        <!-- Details -->
+        <tr>
+          <td style="padding:22px 28px 0;">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="font-size:14px;">
+              <tr>
+                <td style="padding:7px 0;color:#77777f;width:120px;vertical-align:top;">Submitted by</td>
+                <td style="padding:7px 0;color:#1c1c22;font-weight:600;">
+                  <a href="mailto:{{SUBMITTER_EMAIL}}" style="color:#4f2d8f;text-decoration:none;">{{SUBMITTER_EMAIL}}</a>
+                </td>
+              </tr>
+              <tr>
+                <td style="padding:7px 0;color:#77777f;vertical-align:top;">Instagram</td>
+                <td style="padding:7px 0;color:#1c1c22;font-weight:600;">
+                  <a href="{{INSTAGRAM}}" style="color:#4f2d8f;text-decoration:none;">{{INSTAGRAM}}</a>
+                </td>
+              </tr>
+              <tr>
+                <td style="padding:7px 0;color:#77777f;vertical-align:top;">Rules PDF</td>
+                <td style="padding:7px 0;">
+                  <a href="{{RULES_PDF}}" style="color:#4f2d8f;font-weight:600;text-decoration:none;">Open the PDF &rarr;</a>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+
+        <!-- Main image preview. Many clients block remote images until the
+             reader clicks "show images", so the alt text has to stand alone. -->
+        <tr>
+          <td style="padding:20px 28px 0;">
+            <a href="{{MAIN_IMAGE}}" style="text-decoration:none;">
+              <img src="{{MAIN_IMAGE}}" alt="Main image submitted by {{TEAM_NAME}}"
+                   width="544" style="width:100%;max-width:544px;border-radius:8px;display:block;border:1px solid #e6e6ec;" />
+            </a>
+          </td>
+        </tr>
+
+        <!-- Decision buttons -->
+        <tr>
+          <td style="padding:26px 28px 0;">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+              <tr>
+                <td width="49%" style="border-radius:8px;background:#17803d;" align="center">
+                  <a href="{{APPROVE_URL}}"
+                     style="display:block;padding:14px 10px;color:#ffffff;font-size:15px;font-weight:700;text-decoration:none;">
+                    APPROVE
+                  </a>
+                </td>
+                <td width="2%">&nbsp;</td>
+                <td width="49%" style="border-radius:8px;background:#b4212a;" align="center">
+                  <a href="{{REJECT_URL}}"
+                     style="display:block;padding:14px 10px;color:#ffffff;font-size:15px;font-weight:700;text-decoration:none;">
+                    REJECT
+                  </a>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+
+        <tr>
+          <td style="padding:14px 28px 26px;">
+            <div style="font-size:12px;color:#88888f;line-height:1.5;">
+              Each button opens a confirmation page &mdash; nothing changes until you confirm
+              there, so a mis-click or a mail scanner following the link is harmless.
+            </div>
+          </td>
+        </tr>
+
+        <tr>
+          <td style="background:#fafafc;border-top:1px solid #ececf2;padding:16px 28px;">
+            <div style="font-size:12px;color:#9a9aa2;line-height:1.5;">
+              Sent automatically when a submission reaches the gallery. Approving publishes it
+              to the public gallery; rejecting keeps it hidden. You can also change the status
+              by hand in Airtable at any time.
+            </div>
+          </td>
+        </tr>
+
+      </table>
+    </td>
+  </tr>
+</table>
