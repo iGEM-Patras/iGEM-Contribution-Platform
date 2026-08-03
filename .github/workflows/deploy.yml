@@ -48,6 +48,27 @@ jobs:
           fi
           echo "API endpoint: $VITE_API_URL"
 
+      # Non-empty is not the same as correct. A VITE_API_URL with a typo in it
+      # passes every check above, gets inlined into the bundle, and produces a
+      # site whose form fails on the first click — which is exactly what this
+      # project shipped when the Worker subdomain was left out of the variable.
+      #
+      # Vite bakes this value in at build time, so a wrong value cannot be fixed
+      # without a rebuild. Two seconds of curl here is worth more than a green
+      # checkmark on a broken deploy.
+      - name: Verify the API endpoint answers
+        run: |
+          if ! body=$(curl -fsS --max-time 15 "${VITE_API_URL%/}/health"); then
+            echo "::error::$VITE_API_URL/health is unreachable. Deploy blocked."
+            echo "Check the VITE_API_URL variable for a typo, and that the Worker is deployed."
+            exit 1
+          fi
+          echo "$body"
+          case "$body" in
+            *'"ok":true'*) echo "Worker is healthy." ;;
+            *) echo "::error::$VITE_API_URL/health answered, but not as the gallery API."; exit 1 ;;
+          esac
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
