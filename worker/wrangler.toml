@@ -10,7 +10,11 @@ enabled = true
 
 # Public, non-secret configuration. Real secrets are set with
 # `wrangler secret put NAME` and never appear in this file:
-#   AIRTABLE_TOKEN, AIRTABLE_BASE_ID, AIRTABLE_TABLE_ID, ADMIN_SECRET
+#   AIRTABLE_TOKEN, AIRTABLE_BASE_ID, AIRTABLE_TABLE_ID, ADMIN_SECRET,
+#   DECISION_SECRET
+# All five must exist in production. DECISION_SECRET is the one that fails
+# quietly: without it the approve/reject links in the admin email 500 on click,
+# while everything else keeps working.
 [vars]
 # Comma-separated exact origins. No wildcard: the admin routes are guarded by a
 # header, and `*` would let any site on the internet drive them.

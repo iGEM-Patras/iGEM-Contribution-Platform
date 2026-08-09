@@ -29,6 +29,7 @@ const FIELD = {
   rulesPdf: 'Rules PDF URL',
   code: 'Verification Code',
   status: 'Status',
+  year: 'Competition Year',
   approveUrl: 'Approve URL',
   rejectUrl: 'Reject URL',
   decidedAt: 'Decided At',
@@ -38,6 +39,9 @@ const VALID_STATUSES = ['Pending', 'Approved', 'Rejected'];
 
 const MAX_SECONDARY_IMAGES = 3;
 const MAX_TEAM_NAME_LENGTH = 100;
+
+/** iGEM's first competition. Nothing older can legitimately be submitted. */
+const MIN_COMPETITION_YEAR = 2003;
 const MAX_EMAIL_LENGTH = 254; // RFC 5321 limit on a forward path
 const MAX_URL_LENGTH = 500;
 
@@ -305,6 +309,28 @@ function requireEmail(value) {
   return email;
 }
 
+/**
+ * The iGEM year the game belongs to.
+ *
+ * This is asked for rather than inferred. The obvious shortcut — the year the
+ * row was created — answers a different question: a 2024 team uploading today
+ * would be filed under 2026, and every game submitted this season would collapse
+ * into one indistinguishable bucket, which makes the gallery's year filter
+ * worthless. Next year is allowed because teams register before the season ends.
+ */
+function requireCompetitionYear(value) {
+  const year = typeof value === 'string' ? Number(value.trim()) : value;
+  const maxYear = new Date().getUTCFullYear() + 1;
+
+  if (!Number.isInteger(year) || year < MIN_COMPETITION_YEAR || year > maxYear) {
+    throw new ApiError(
+      400,
+      `Competition year must be a whole number between ${MIN_COMPETITION_YEAR} and ${maxYear}.`
+    );
+  }
+  return year;
+}
+
 function optionalInstagram(value) {
   if (value == null || value === '') return null;
 
@@ -372,7 +398,13 @@ async function airtableFetch(env, path, init = {}) {
     if (response.status === 429) {
       throw new ApiError(429, 'Too many requests right now. Wait a few seconds and try again.');
     }
-    throw new ApiError(502, 'Airtable rejected the request. The admin has been notified via logs.');
+
+    // The parsed body rides along on the error so a caller can react to a
+    // specific Airtable failure. It is never forwarded to the browser — Airtable
+    // error text names fields and base structure.
+    const error = new ApiError(502, 'Airtable rejected the request. The admin has been notified via logs.');
+    error.airtable = payload;
+    throw error;
   }
 
   return payload;
@@ -404,6 +436,18 @@ async function airtableList(env, { filterByFormula = null, maxPages = 10 } = {})
   return records;
 }
 
+/**
+ * True when Airtable rejected a write because a named column does not exist.
+ *
+ * Airtable answers 422 with {"error":{"type":"UNKNOWN_FIELD_NAME", "message":
+ * "Unknown field name: \"Competition Year\""}}. Both halves are checked so this
+ * cannot swallow a different field's problem.
+ */
+function isUnknownFieldError(error, fieldName) {
+  const detail = error?.airtable?.error;
+  return detail?.type === 'UNKNOWN_FIELD_NAME' && String(detail.message ?? '').includes(fieldName);
+}
+
 /** Secondary image URLs are stored as a JSON array in a long-text field. */
 function parseSecondaryImages(value) {
   if (!value) return [];
@@ -417,7 +461,32 @@ function parseSecondaryImages(value) {
   }
 }
 
-/** Shape sent to the public gallery. Note what is absent: email, code. */
+/**
+ * Partially mask an address for the gallery's "Submitted by" line.
+ *
+ * The gallery is a public, crawlable page, and a plain mailto-shaped string on
+ * one is the classic way a team's inbox ends up on a spam list. Masking the
+ * local part keeps the attribution readable — you can still tell a submission
+ * came from your own team's address — without publishing a working address.
+ *
+ * Flip this to return `value` if the team decides full addresses are wanted.
+ */
+function maskEmail(value) {
+  if (typeof value !== 'string') return null;
+
+  const at = value.lastIndexOf('@');
+  if (at < 1) return null;
+
+  const local = value.slice(0, at);
+  const domain = value.slice(at + 1);
+  const shown = local.slice(0, local.length <= 2 ? 1 : 2);
+
+  // Fixed-width mask: a run of dots proportional to the real local part would
+  // leak its length, which is one fewer guess for anyone reconstructing it.
+  return `${shown}•••@${domain}`;
+}
+
+/** Shape sent to the public gallery. Note what is absent: raw email, code. */
 function toPublicGame(record) {
   const fields = record.fields ?? {};
   return {
@@ -427,6 +496,10 @@ function toPublicGame(record) {
     mainImageUrl: fields[FIELD.mainImage] ?? null,
     secondaryImageUrls: parseSecondaryImages(fields[FIELD.secondaryImages]),
     rulesPdfUrl: fields[FIELD.rulesPdf] ?? null,
+    submittedBy: maskEmail(fields[FIELD.email]),
+    // Null on rows created before this field existed; the gallery falls back to
+    // the created date for those.
+    competitionYear: Number.isInteger(fields[FIELD.year]) ? fields[FIELD.year] : null,
     createdTime: record.createdTime,
   };
 }
@@ -461,6 +534,7 @@ async function handleSubmit(request, env) {
 
   const teamName = requireString(body.teamName, 'Team name', MAX_TEAM_NAME_LENGTH);
   const email = requireEmail(body.email);
+  const competitionYear = requireCompetitionYear(body.competitionYear);
   const instagram = optionalInstagram(body.instagram);
   const mainImageUrl = requireCloudinaryUrl(body.mainImageUrl, 'Main image', env);
   const secondaryImageUrls = secondaryInput.map((url, i) =>
@@ -477,6 +551,7 @@ async function handleSubmit(request, env) {
   const fields = {
     [FIELD.teamName]: teamName,
     [FIELD.email]: email,
+    [FIELD.year]: competitionYear,
     [FIELD.mainImage]: mainImageUrl,
     [FIELD.secondaryImages]: JSON.stringify(secondaryImageUrls),
     [FIELD.rulesPdf]: rulesPdfUrl,
@@ -492,10 +567,29 @@ async function handleSubmit(request, env) {
   // typecast stays off. With it on, a Status that doesn't match an existing
   // option gets silently added to the field's option list — a schema change
   // nobody asked for. Off, a mismatch is a loud error you fix once in the base.
-  const payload = await airtableFetch(env, '', {
-    method: 'POST',
-    body: JSON.stringify({ fields }),
-  });
+  const create = fieldsToWrite =>
+    airtableFetch(env, '', { method: 'POST', body: JSON.stringify({ fields: fieldsToWrite }) });
+
+  let payload;
+  try {
+    payload = await create(fields);
+  } catch (cause) {
+    // "Competition Year" is a column somebody has to add to the base by hand.
+    // Deploying this Worker before that happens would otherwise reject every
+    // submission — a total outage of the form, caused by one missing column,
+    // for a field that only powers a filter. Save the submission without it and
+    // shout in the logs instead; the gallery falls back to the created date.
+    if (!isUnknownFieldError(cause, FIELD.year)) throw cause;
+
+    console.error(
+      `[submit] Airtable has no "${FIELD.year}" field — saving without it. ` +
+      'Add a Number column with that exact name to restore the year filter.'
+    );
+
+    const withoutYear = { ...fields };
+    delete withoutYear[FIELD.year];
+    payload = await create(withoutYear);
+  }
 
   if (!payload?.id) {
     throw new ApiError(502, 'Airtable accepted the record but returned no record ID.');
@@ -527,7 +621,39 @@ async function handleSubmit(request, env) {
   return { success: true, verificationCode, recordId: payload.id };
 }
 
+/**
+ * The public gallery, memoised in the isolate.
+ *
+ * Every visitor to the gallery costs an Airtable read, and Airtable rate-limits
+ * a base at 5 requests/second — past that it answers 429, which this Worker
+ * turns into a full-page error. One link shared into a Jamboree channel is
+ * enough to reach that. Cloudflare's Cache API is a no-op on workers.dev, so the
+ * cache is a plain module-scope variable: it lives as long as the isolate, which
+ * is exactly the window a traffic spike arrives in.
+ *
+ * The cost is that a newly approved game can take up to a minute to appear.
+ */
+const APPROVED_CACHE_MS = 60_000;
+
+let approvedCache = { expires: 0, body: null };
+
+/**
+ * Drop the memo after a decision so an approval shows up on the next load
+ * rather than a minute later — an admin who clicks Approve and then refreshes
+ * the gallery should see the game.
+ *
+ * This only clears the isolate that handled the decision. Others expire on
+ * their own within the minute, which is the ceiling on the staleness anyway.
+ */
+function invalidateApprovedCache() {
+  approvedCache = { expires: 0, body: null };
+}
+
 async function handleApproved(request, env) {
+  if (approvedCache.body && Date.now() < approvedCache.expires) {
+    return approvedCache.body;
+  }
+
   const records = await airtableList(env, {
     filterByFormula: `{${FIELD.status}} = "Approved"`,
   });
@@ -538,7 +664,41 @@ async function handleApproved(request, env) {
     .filter(game => game.mainImageUrl)
     .sort((a, b) => (b.createdTime ?? '').localeCompare(a.createdTime ?? ''));
 
-  return { games };
+  // An empty gallery is ambiguous: it means "nothing approved yet", or it means
+  // the Status field was renamed in the base and the filter now matches nothing
+  // — which would render as a cheerful "No games published yet" forever. One
+  // extra read on the empty path tells the two apart.
+  if (games.length === 0) {
+    await assertStatusFieldExists(env);
+  }
+
+  const body = { games };
+  approvedCache = { expires: Date.now() + APPROVED_CACHE_MS, body };
+  return body;
+}
+
+/**
+ * Fail loudly if the base has rows but none of them carries a Status field.
+ *
+ * Only called when the approved list came back empty, so it costs nothing in
+ * the normal case.
+ *
+ * @throws {ApiError} when the schema no longer matches FIELD.status
+ */
+async function assertStatusFieldExists(env) {
+  const params = new URLSearchParams({ pageSize: '10' });
+  const payload = await airtableFetch(env, `?${params}`);
+  const records = payload?.records ?? [];
+
+  if (records.length === 0) return; // genuinely an empty base
+
+  if (records.every(record => !(FIELD.status in (record.fields ?? {})))) {
+    console.error(
+      `[approved] no record has a "${FIELD.status}" field — the column was ` +
+      'renamed or removed in Airtable, so nothing can ever be approved.'
+    );
+    throw new ApiError(500, 'The gallery is misconfigured. The team has been notified.');
+  }
 }
 
 async function handleAdminSubmissions(request, env) {
@@ -592,6 +752,7 @@ async function handleAdminStatus(request, env) {
   });
 
   console.info(`[admin] ${recordId} -> ${status}`);
+  invalidateApprovedCache();
   return { success: true, recordId, status: payload?.fields?.[FIELD.status] ?? status };
 }
 
@@ -734,6 +895,7 @@ async function handleDecidePost(request, env) {
   const fields = payload?.fields ?? {};
   const isApprove = decision.action === 'approve';
   console.info(`[decide] ${decision.recordId} -> ${decision.status} via email link`);
+  invalidateApprovedCache();
 
   return decisionPage(
     `${decision.status} — ${fields[FIELD.teamName] ?? 'submission'}`,

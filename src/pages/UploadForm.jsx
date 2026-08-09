@@ -1,0 +1,623 @@
+import { useEffect, useRef, useState } from 'react';
+import { uploadToCloudinary, MAX_IMAGE_BYTES, MAX_PDF_BYTES } from '../utils/fileUpload';
+import { submitGame } from '../utils/api';
+import Link from '../components/Link';
+import { ROUTES } from '../utils/router';
+
+const MAX_SECONDARY_IMAGES = 3;
+
+/** iGEM's first competition; the newest option is next year, since teams
+ *  register before the current season closes. */
+const MIN_COMPETITION_YEAR = 2003;
+const MAX_COMPETITION_YEAR = new Date().getFullYear() + 1;
+
+const COMPETITION_YEARS = Array.from(
+  { length: MAX_COMPETITION_YEAR - MIN_COMPETITION_YEAR + 1 },
+  (_, index) => MAX_COMPETITION_YEAR - index
+);
+
+const EMPTY_FORM = {
+  teamName: '',
+  // Asked for rather than inferred from the submission date: a 2024 team can
+  // upload its game today, and the gallery's year filter has to say 2024.
+  competitionYear: String(new Date().getFullYear()),
+  email: '',
+  instagram: '',
+  mainImage: null,
+  secondaryImages: [],
+  rulesFile: null,
+};
+
+// Identifies a File well enough to key a list row and to spot duplicates.
+const fileKey = (file) => `${file.name}-${file.size}-${file.lastModified}`;
+
+export default function UploadForm() {
+  const [formData, setFormData] = useState(EMPTY_FORM);
+  const [errors, setErrors] = useState({});
+  const [loading, setLoading] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
+
+  // Set once the Airtable record exists; this is the only copy the team gets.
+  const [verificationCode, setVerificationCode] = useState('');
+  // null when idle, otherwise { stage: 'uploading' | 'saving', done, total }
+  const [progress, setProgress] = useState(null);
+  const [copied, setCopied] = useState(false);
+
+  const copyTimerRef = useRef(null);
+  useEffect(() => () => clearTimeout(copyTimerRef.current), []);
+
+  // `loading` is async state — two fast clicks can both read it as false before
+  // React re-renders, which would double-upload and create two Airtable rows.
+  // A ref updates synchronously, so it actually closes the window.
+  const submittingRef = useRef(false);
+
+  const setError = (name, message) =>
+    setErrors(prev => ({ ...prev, [name]: message }));
+
+  // Handle text inputs
+  const handleInputChange = (e) => {
+    const { name, value } = e.target;
+    setFormData(prev => ({
+      ...prev,
+      [name]: value
+    }));
+    // Clear error when user starts typing
+    if (errors[name]) {
+      setError(name, '');
+    }
+  };
+
+  // Handle main image
+  const handleMainImageChange = (e) => {
+    const file = e.target.files?.[0];
+    // Always clear the input so picking the same file again still fires onChange.
+    e.target.value = '';
+    if (!file) return;
+
+    if (!file.type.startsWith('image/')) {
+      setError('mainImage', 'Only image files are allowed');
+      return;
+    }
+    if (file.size > MAX_IMAGE_BYTES) {
+      setError('mainImage', 'Image must be under 5MB');
+      return;
+    }
+    setFormData(prev => ({ ...prev, mainImage: file }));
+    setError('mainImage', '');
+  };
+
+  // Handle secondary images (up to 3)
+  const handleSecondaryImagesChange = (e) => {
+    const files = Array.from(e.target.files ?? []);
+    e.target.value = '';
+    if (files.length === 0) return;
+
+    const existing = new Set(formData.secondaryImages.map(fileKey));
+    const remaining = MAX_SECONDARY_IMAGES - formData.secondaryImages.length;
+    const accepted = [];
+    const rejected = [];
+
+    for (const file of files) {
+      if (!file.type.startsWith('image/')) {
+        rejected.push(`${file.name} is not an image`);
+      } else if (file.size > MAX_IMAGE_BYTES) {
+        rejected.push(`${file.name} is over 5MB`);
+      } else if (existing.has(fileKey(file))) {
+        rejected.push(`${file.name} was already added`);
+      } else if (accepted.length >= remaining) {
+        rejected.push(`${file.name} exceeds the ${MAX_SECONDARY_IMAGES}-image limit`);
+      } else {
+        existing.add(fileKey(file));
+        accepted.push(file);
+      }
+    }
+
+    if (accepted.length > 0) {
+      setFormData(prev => ({
+        ...prev,
+        secondaryImages: [...prev.secondaryImages, ...accepted]
+      }));
+    }
+    setError('secondaryImages', rejected.join('; '));
+  };
+
+  // Remove secondary image
+  const removeSecondaryImage = (index) => {
+    setFormData(prev => ({
+      ...prev,
+      secondaryImages: prev.secondaryImages.filter((_, i) => i !== index)
+    }));
+    // Freeing a slot invalidates any "limit reached" message.
+    setError('secondaryImages', '');
+  };
+
+  // Handle rules file
+  const handleRulesFileChange = (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+
+    if (file.type !== 'application/pdf') {
+      setError('rulesFile', 'Only PDF files allowed');
+      return;
+    }
+    if (file.size > MAX_PDF_BYTES) {
+      setError('rulesFile', 'PDF must be under 10MB');
+      return;
+    }
+    setFormData(prev => ({ ...prev, rulesFile: file }));
+    setError('rulesFile', '');
+  };
+
+  // Validate form
+  const validateForm = () => {
+    const newErrors = {};
+
+    if (!formData.teamName.trim()) {
+      newErrors.teamName = 'Team name is required';
+    }
+    if (!COMPETITION_YEARS.includes(Number(formData.competitionYear))) {
+      newErrors.competitionYear = 'Select the iGEM year this game belongs to';
+    }
+    if (!formData.email.trim()) {
+      newErrors.email = 'Email is required';
+    } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email)) {
+      newErrors.email = 'Invalid email format';
+    }
+    if (formData.instagram.trim()) {
+      try {
+        const url = new URL(formData.instagram.trim());
+        if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+          newErrors.instagram = 'Link must start with http:// or https://';
+        }
+      } catch {
+        newErrors.instagram = 'Enter a valid URL (e.g. https://instagram.com/your-team)';
+      }
+    }
+    if (!formData.mainImage) {
+      newErrors.mainImage = 'Main image is required';
+    }
+    if (formData.secondaryImages.length === 0) {
+      newErrors.secondaryImages = 'At least 1 secondary image is required';
+    }
+    if (!formData.rulesFile) {
+      newErrors.rulesFile = 'Rules PDF is required';
+    }
+
+    setErrors(newErrors);
+    return Object.keys(newErrors).length === 0;
+  };
+
+  // Submit form
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+
+    if (submittingRef.current || !validateForm()) {
+      return;
+    }
+
+    submittingRef.current = true;
+    setLoading(true);
+    const total = 1 + formData.secondaryImages.length + 1; // main + secondary + pdf
+    setProgress({ stage: 'uploading', done: 0, total });
+    const markUploaded = () =>
+      setProgress(prev => (prev ? { ...prev, done: prev.done + 1 } : prev));
+
+    try {
+      // Main image first, so a misconfigured Cloudinary account fails fast
+      // before we push the rest of the files over the wire.
+      const mainUrl = await uploadToCloudinary(formData.mainImage, { resourceType: 'image' });
+      markUploaded();
+
+      const secondaryUrls = await Promise.all(
+        formData.secondaryImages.map(async (file) => {
+          const url = await uploadToCloudinary(file, { resourceType: 'image' });
+          markUploaded();
+          return url;
+        })
+      );
+
+      // 'raw' keeps the PDF out of Cloudinary's image pipeline, which is
+      // subject to the PDF-delivery restriction that new accounts have off.
+      const pdfUrl = await uploadToCloudinary(formData.rulesFile, { resourceType: 'raw' });
+      markUploaded();
+
+      setProgress({ stage: 'saving', done: total, total });
+      // The Worker holds the Airtable credential and mints the verification
+      // code; the browser only ever sees the code it gets back.
+      const result = await submitGame({
+        teamName: formData.teamName.trim(),
+        competitionYear: Number(formData.competitionYear),
+        email: formData.email.trim(),
+        instagram: formData.instagram.trim(),
+        mainImageUrl: mainUrl,
+        secondaryImageUrls: secondaryUrls,
+        rulesPdfUrl: pdfUrl,
+      });
+
+      setVerificationCode(result.verificationCode);
+      setSubmitted(true);
+    } catch (error) {
+      console.error('Submission error:', error);
+      // The utils throw messages written for humans, so surface them directly.
+      setError('submit', error.message || 'Failed to submit. Please try again.');
+    } finally {
+      submittingRef.current = false;
+      setLoading(false);
+      setProgress(null);
+    }
+  };
+
+  const startAnotherSubmission = () => {
+    setFormData(EMPTY_FORM);
+    setErrors({});
+    setVerificationCode('');
+    setCopied(false);
+    setSubmitted(false);
+  };
+
+  const copyCode = async () => {
+    try {
+      await navigator.clipboard.writeText(verificationCode);
+      setCopied(true);
+      clearTimeout(copyTimerRef.current);
+      copyTimerRef.current = setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Clipboard is blocked outside secure contexts and in some browsers;
+      // the code is selectable on screen, so this is not worth an error state.
+      console.warn('Clipboard write was blocked — copy the code manually.');
+    }
+  };
+
+  const submitLabel = () => {
+    if (!progress) return loading ? 'Submitting...' : 'Submit Game Upload';
+    if (progress.stage === 'saving') return 'Saving submission...';
+    return `Uploading files... ${progress.done}/${progress.total}`;
+  };
+
+  // Shared classes for the text inputs.
+  const inputClass = (hasError) =>
+    `w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 ${
+      hasError ? 'border-red-500' : 'border-gray-300'
+    }`;
+
+  // Dashed upload box: the label is the box, so the whole area is clickable.
+  const dropZoneClass =
+    'block border-2 border-dashed border-gray-300 rounded-lg p-6 text-center ' +
+    'hover:border-purple-500 focus-within:border-purple-500 focus-within:ring-2 ' +
+    'focus-within:ring-purple-500 cursor-pointer transition';
+
+  if (submitted) {
+    return (
+      <div className="flex items-center justify-center px-4 py-12">
+        <div className="bg-white rounded-lg shadow-lg p-8 max-w-md w-full text-center" role="status">
+          <div className="mb-4">
+            <svg className="mx-auto h-12 w-12 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+            </svg>
+          </div>
+          <h2 className="text-2xl font-bold text-gray-900 mb-2">Success!</h2>
+          <p className="text-gray-600 mb-6">
+            Your game has been submitted and is pending review.
+          </p>
+
+          {/* The code exists nowhere else yet — this screen must not auto-dismiss. */}
+          <div className="bg-purple-50 border-2 border-purple-200 rounded-lg p-5 mb-4">
+            <p className="text-xs font-medium uppercase tracking-wide text-purple-700 mb-2">
+              Your verification code
+            </p>
+            <p className="text-3xl font-bold font-mono tracking-[0.2em] text-purple-900 select-all break-all">
+              {verificationCode}
+            </p>
+            <button
+              type="button"
+              onClick={copyCode}
+              className="mt-3 text-sm font-medium text-purple-700 hover:text-purple-900 underline"
+            >
+              {copied ? 'Copied!' : 'Copy code'}
+            </button>
+          </div>
+
+          <p className="text-sm text-gray-700 font-medium mb-2">
+            Save this code now — it identifies your submission.
+          </p>
+          <p className="text-sm text-gray-500 mb-6">
+            Our admin team will review your submission and contact you within 24 hours.
+          </p>
+
+          <button
+            type="button"
+            onClick={startAnotherSubmission}
+            className="w-full bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white font-bold py-3 rounded-lg transition"
+          >
+            Submit another game
+          </button>
+
+          <Link
+            to={ROUTES.gallery}
+            className="mt-3 block text-sm font-medium text-purple-700 hover:text-purple-900 underline"
+          >
+            Browse the gallery
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="py-12 px-4">
+      <div className="max-w-2xl mx-auto">
+        {/* Header */}
+        <div className="text-center mb-12">
+          <h1 className="text-4xl font-bold text-gray-900 mb-4">Upload your game</h1>
+          <p className="text-lg text-gray-600">
+            Share your iGEM team's game with the community. Submissions are reviewed
+            by iGEM Patras 2026 before they appear in the gallery.
+          </p>
+        </div>
+
+        {/* Form Card */}
+        <div className="bg-white rounded-lg shadow-lg p-8">
+          {/* noValidate: this form reports its own errors, so the browser's
+              native bubbles must not pre-empt them. */}
+          <form onSubmit={handleSubmit} noValidate className="space-y-6">
+
+            {/* Team Name */}
+            <div>
+              <label htmlFor="teamName" className="block text-sm font-medium text-gray-700 mb-2">
+                Team Name *
+              </label>
+              <input
+                type="text"
+                id="teamName"
+                name="teamName"
+                value={formData.teamName}
+                onChange={handleInputChange}
+                placeholder="e.g., MIT iGEM 2024"
+                disabled={loading}
+                aria-invalid={Boolean(errors.teamName)}
+                aria-describedby={errors.teamName ? 'teamName-error' : undefined}
+                className={inputClass(errors.teamName)}
+              />
+              {errors.teamName && (
+                <p id="teamName-error" role="alert" className="text-red-500 text-sm mt-1">{errors.teamName}</p>
+              )}
+            </div>
+
+            {/* Competition Year */}
+            <div>
+              <label htmlFor="competitionYear" className="block text-sm font-medium text-gray-700 mb-2">
+                iGEM Year *
+              </label>
+              <select
+                id="competitionYear"
+                name="competitionYear"
+                value={formData.competitionYear}
+                onChange={handleInputChange}
+                disabled={loading}
+                aria-invalid={Boolean(errors.competitionYear)}
+                aria-describedby={errors.competitionYear ? 'competitionYear-error' : 'competitionYear-hint'}
+                className={`${inputClass(errors.competitionYear)} bg-white`}
+              >
+                {COMPETITION_YEARS.map(year => (
+                  <option key={year} value={String(year)}>
+                    {year}
+                  </option>
+                ))}
+              </select>
+              {errors.competitionYear ? (
+                <p id="competitionYear-error" role="alert" className="text-red-500 text-sm mt-1">
+                  {errors.competitionYear}
+                </p>
+              ) : (
+                <p id="competitionYear-hint" className="text-gray-500 text-xs mt-1">
+                  The competition year the game was made for — visitors filter the gallery by it
+                </p>
+              )}
+            </div>
+
+            {/* Email */}
+            <div>
+              <label htmlFor="email" className="block text-sm font-medium text-gray-700 mb-2">
+                Email *
+              </label>
+              <input
+                type="email"
+                id="email"
+                name="email"
+                value={formData.email}
+                onChange={handleInputChange}
+                placeholder="your@email.com"
+                disabled={loading}
+                aria-invalid={Boolean(errors.email)}
+                aria-describedby={errors.email ? 'email-error' : undefined}
+                className={inputClass(errors.email)}
+              />
+              {errors.email && (
+                <p id="email-error" role="alert" className="text-red-500 text-sm mt-1">{errors.email}</p>
+              )}
+            </div>
+
+            {/* Instagram */}
+            <div>
+              <label htmlFor="instagram" className="block text-sm font-medium text-gray-700 mb-2">
+                Instagram Link (Optional)
+              </label>
+              <input
+                type="url"
+                id="instagram"
+                name="instagram"
+                value={formData.instagram}
+                onChange={handleInputChange}
+                placeholder="https://instagram.com/your-team"
+                disabled={loading}
+                aria-invalid={Boolean(errors.instagram)}
+                aria-describedby={errors.instagram ? 'instagram-error' : 'instagram-hint'}
+                className={inputClass(errors.instagram)}
+              />
+              {errors.instagram ? (
+                <p id="instagram-error" role="alert" className="text-red-500 text-sm mt-1">{errors.instagram}</p>
+              ) : (
+                <p id="instagram-hint" className="text-gray-500 text-xs mt-1">
+                  Helps us verify your team's authenticity
+                </p>
+              )}
+            </div>
+
+            {/* Main Image */}
+            <div>
+              <span className="block text-sm font-medium text-gray-700 mb-2">
+                Main Game Image *
+              </span>
+              <label htmlFor="mainImage" className={dropZoneClass}>
+                {/* sr-only rather than hidden: display:none would make the
+                    input unreachable by keyboard. */}
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={handleMainImageChange}
+                  className="sr-only"
+                  id="mainImage"
+                  disabled={loading}
+                  aria-invalid={Boolean(errors.mainImage)}
+                  aria-describedby={errors.mainImage ? 'mainImage-error' : undefined}
+                />
+                <svg className="mx-auto h-12 w-12 text-gray-400 mb-2" stroke="currentColor" fill="none" viewBox="0 0 48 48" aria-hidden="true">
+                  <path d="M28 8H12a4 4 0 00-4 4v20a4 4 0 004 4h24a4 4 0 004-4V20m-8-8h-8m0 0V4m0 8v8" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                <span className="block text-gray-600">Click to upload</span>
+                <span className="block text-gray-500 text-xs">PNG, JPG up to 5MB</span>
+              </label>
+              {formData.mainImage && (
+                <p className="text-green-600 text-sm mt-2">✓ {formData.mainImage.name}</p>
+              )}
+              {errors.mainImage && (
+                <p id="mainImage-error" role="alert" className="text-red-500 text-sm mt-1">{errors.mainImage}</p>
+              )}
+            </div>
+
+            {/* Secondary Images */}
+            <div>
+              <span className="block text-sm font-medium text-gray-700 mb-2">
+                Additional Images ({formData.secondaryImages.length}/{MAX_SECONDARY_IMAGES}) *
+              </span>
+              <label htmlFor="secondaryImages" className={dropZoneClass}>
+                <input
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  onChange={handleSecondaryImagesChange}
+                  className="sr-only"
+                  id="secondaryImages"
+                  disabled={loading}
+                  aria-invalid={Boolean(errors.secondaryImages)}
+                  aria-describedby={errors.secondaryImages ? 'secondaryImages-error' : undefined}
+                />
+                <svg className="mx-auto h-12 w-12 text-gray-400 mb-2" stroke="currentColor" fill="none" viewBox="0 0 48 48" aria-hidden="true">
+                  <path d="M28 8H12a4 4 0 00-4 4v20a4 4 0 004 4h24a4 4 0 004-4V20m-8-8h-8m0 0V4m0 8v8" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                <span className="block text-gray-600">
+                  Click to upload up to {MAX_SECONDARY_IMAGES} images
+                </span>
+                <span className="block text-gray-500 text-xs">PNG, JPG up to 5MB each</span>
+              </label>
+              {formData.secondaryImages.length > 0 && (
+                <ul className="mt-4 space-y-2">
+                  {formData.secondaryImages.map((file, index) => (
+                    <li key={fileKey(file)} className="flex items-center justify-between bg-gray-50 p-2 rounded">
+                      <span className="text-sm text-gray-600">{file.name}</span>
+                      <button
+                        type="button"
+                        onClick={() => removeSecondaryImage(index)}
+                        disabled={loading}
+                        className="text-red-500 hover:text-red-700 text-sm font-medium disabled:opacity-50"
+                      >
+                        Remove<span className="sr-only"> {file.name}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {errors.secondaryImages && (
+                <p id="secondaryImages-error" role="alert" className="text-red-500 text-sm mt-1">{errors.secondaryImages}</p>
+              )}
+            </div>
+
+            {/* Rules PDF */}
+            <div>
+              <span className="block text-sm font-medium text-gray-700 mb-2">
+                Game Rules (PDF) *
+              </span>
+              <label htmlFor="rulesFile" className={dropZoneClass}>
+                <input
+                  type="file"
+                  accept="application/pdf"
+                  onChange={handleRulesFileChange}
+                  className="sr-only"
+                  id="rulesFile"
+                  disabled={loading}
+                  aria-invalid={Boolean(errors.rulesFile)}
+                  aria-describedby={errors.rulesFile ? 'rulesFile-error' : undefined}
+                />
+                <svg className="mx-auto h-12 w-12 text-gray-400 mb-2" stroke="currentColor" fill="none" viewBox="0 0 48 48" aria-hidden="true">
+                  <path d="M8 8h32v32H8z" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+                  <path d="M8 16h32M8 24h32M8 32h32" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                <span className="block text-gray-600">Click to upload PDF</span>
+                <span className="block text-gray-500 text-xs">PDF up to 10MB</span>
+              </label>
+              {formData.rulesFile && (
+                <p className="text-green-600 text-sm mt-2">✓ {formData.rulesFile.name}</p>
+              )}
+              {errors.rulesFile && (
+                <p id="rulesFile-error" role="alert" className="text-red-500 text-sm mt-1">{errors.rulesFile}</p>
+              )}
+            </div>
+
+            {/* Submit Error */}
+            {errors.submit && (
+              <div className="bg-red-50 border border-red-200 rounded-lg p-4" role="alert">
+                <p className="text-red-700 text-sm">{errors.submit}</p>
+              </div>
+            )}
+
+            {/* Upload progress */}
+            {progress && (
+              <div>
+                <div
+                  role="progressbar"
+                  aria-valuemin={0}
+                  aria-valuemax={progress.total}
+                  aria-valuenow={progress.done}
+                  aria-label={progress.stage === 'saving' ? 'Saving submission' : 'Uploading files'}
+                  className="h-2 w-full bg-gray-200 rounded-full overflow-hidden"
+                >
+                  <div
+                    className="h-full bg-purple-600 transition-all duration-300"
+                    style={{ width: `${(progress.done / progress.total) * 100}%` }}
+                  />
+                </div>
+                <p className="text-gray-500 text-xs mt-2 text-center">
+                  Keep this tab open until your verification code appears.
+                </p>
+              </div>
+            )}
+
+            {/* Submit Button */}
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white font-bold py-3 rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {submitLabel()}
+            </button>
+
+            <p className="text-gray-500 text-xs text-center">
+              * Required fields. You'll get a verification code as soon as your files finish uploading.
+            </p>
+          </form>
+        </div>
+      </div>
+    </div>
+  );
+}
